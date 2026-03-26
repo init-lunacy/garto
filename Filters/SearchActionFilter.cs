@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Gelato.Config;
 using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Dto;
@@ -22,6 +23,7 @@ public class SearchActionFilter(
         ActionExecutionDelegate next
     )
     {
+        var requestStopwatch = Stopwatch.StartNew();
         ctx.TryGetUserId(out var userId);
         var cfg = GelatoPlugin.Instance!.GetConfig(userId);
         if (
@@ -65,8 +67,20 @@ public class SearchActionFilter(
             metas.Count
         );
 
+        var dtoStopwatch = Stopwatch.StartNew();
         var dtos = ConvertMetasToDtos(metas);
+        dtoStopwatch.Stop();
         var paged = dtos.Skip(start).Take(limit).ToArray();
+        requestStopwatch.Stop();
+
+        log.LogInformation(
+            "Gelato search completed query=\"{Query}\" totalMs={TotalMs} dtoMs={DtoMs} upstreamResults={Results} returned={Returned}",
+            searchTerm,
+            requestStopwatch.ElapsedMilliseconds,
+            dtoStopwatch.ElapsedMilliseconds,
+            metas.Count,
+            paged.Length
+        );
 
         ctx.Result = new OkObjectResult(
             new QueryResult<BaseItemDto> { Items = paged, TotalRecordCount = dtos.Count }
@@ -117,6 +131,7 @@ public class SearchActionFilter(
     )
     {
         var tasks = new List<Task<IReadOnlyList<StremioMeta>>>();
+        var taskKinds = new List<string>();
         var movieFolder = cfg.MovieFolder ?? manager.TryGetMovieFolder(userId);
         var seriesFolder = cfg.SeriesFolder ?? manager.TryGetSeriesFolder(userId);
 
@@ -127,6 +142,7 @@ public class SearchActionFilter(
         if (requestedTypes.Contains(BaseItemKind.Movie) && movieFolder is not null)
         {
             tasks.Add(cfg.Stremio.SearchAsync(searchTerm, StremioMediaType.Movie));
+            taskKinds.Add("movie");
         }
         else if (requestedTypes.Contains(BaseItemKind.Movie))
         {
@@ -138,6 +154,7 @@ public class SearchActionFilter(
         if (requestedTypes.Contains(BaseItemKind.Series) && seriesFolder is not null)
         {
             tasks.Add(cfg.Stremio.SearchAsync(searchTerm, StremioMediaType.Series));
+            taskKinds.Add("series");
         }
         else if (requestedTypes.Contains(BaseItemKind.Series))
         {
@@ -146,7 +163,17 @@ public class SearchActionFilter(
             );
         }
 
+        var searchStopwatch = Stopwatch.StartNew();
         var results = (await Task.WhenAll(tasks)).SelectMany(r => r).ToList();
+        searchStopwatch.Stop();
+
+        log.LogInformation(
+            "Gelato upstream search query=\"{Query}\" kinds=[{Kinds}] durationMs={DurationMs} results={Results}",
+            searchTerm,
+            string.Join(",", taskKinds),
+            searchStopwatch.ElapsedMilliseconds,
+            results.Count
+        );
 
         var filterUnreleased = cfg.FilterUnreleased;
         var bufferDays = cfg.FilterUnreleasedBufferDays;

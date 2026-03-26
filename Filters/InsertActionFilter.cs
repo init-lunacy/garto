@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Jellyfin.Database.Implementations.Entities;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
@@ -61,10 +62,12 @@ public class InsertActionFilter(
 
         // Fetch full metadata
         var cfg = GelatoPlugin.Instance!.GetConfig(userId);
+        var metaStopwatch = Stopwatch.StartNew();
         var meta = await cfg.Stremio.GetMetaAsync(
             stremioMeta.ImdbId ?? stremioMeta.Id,
             stremioMeta.Type
         );
+        metaStopwatch.Stop();
         if (meta is null)
         {
             log.LogError(
@@ -76,10 +79,25 @@ public class InsertActionFilter(
             return;
         }
 
+        log.LogInformation(
+            "Gelato insert fetched full meta for {Id} type={Type} in {ElapsedMs}ms",
+            stremioMeta.Id,
+            stremioMeta.Type,
+            metaStopwatch.ElapsedMilliseconds
+        );
+
         // Insert the item
+        var insertStopwatch = Stopwatch.StartNew();
         var baseItem = await InsertMetaAsync(guid, root, meta, user);
+        insertStopwatch.Stop();
         if (baseItem is not null)
         {
+            log.LogInformation(
+                "Gelato insert created/resolved item {Name} ({Id}) in {ElapsedMs}ms",
+                baseItem.Name,
+                baseItem.Id,
+                insertStopwatch.ElapsedMilliseconds
+            );
             ctx.ReplaceGuid(baseItem.Id);
             manager.RemoveStremioMeta(guid);
         }

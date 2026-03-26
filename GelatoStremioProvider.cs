@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -48,11 +49,12 @@ public class GelatoStremioProvider(
     private async Task<T?> GetJsonAsync<T>(string url)
     {
         log.LogDebug("GetJsonAsync: requesting {Url}", url);
+        var stopwatch = Stopwatch.StartNew();
 
         try
         {
             var c = NewClient();
-            var resp = await c.GetAsync(url).ConfigureAwait(false); // No using statement
+            using var resp = await c.GetAsync(url).ConfigureAwait(false);
 
             if (!resp.IsSuccessStatusCode)
             {
@@ -71,10 +73,18 @@ public class GelatoStremioProvider(
             }
 
             await using var s = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false);
-            return await JsonSerializer.DeserializeAsync<T>(s, JsonOpts).ConfigureAwait(false);
+            var payload = await JsonSerializer.DeserializeAsync<T>(s, JsonOpts).ConfigureAwait(false);
+            stopwatch.Stop();
+            log.LogInformation(
+                "Gelato HTTP {Url} completed in {ElapsedMs}ms",
+                url,
+                stopwatch.ElapsedMilliseconds
+            );
+            return payload;
         }
         catch (Exception ex)
         {
+            stopwatch.Stop();
             log.LogError(ex, "GetJsonAsync: error fetching or parsing {Url}", url);
             throw;
         }

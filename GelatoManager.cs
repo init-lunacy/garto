@@ -406,7 +406,9 @@ public sealed class GelatoManager(
 
         var cfg = GelatoPlugin.Instance!.GetConfig(userId);
         var stremio = cfg.Stremio;
+        var fetchStopwatch = Stopwatch.StartNew();
         var streams = await stremio.GetStreamsAsync(uri).ConfigureAwait(false);
+        fetchStopwatch.Stop();
         var httpPort = GetHttpPort();
 
         // Filter valid streams
@@ -440,10 +442,12 @@ public sealed class GelatoManager(
             //  IsVirtualItem = true,
         };
 
+        var existingLookupStopwatch = Stopwatch.StartNew();
         var existingStreamItems = repo.GetItemList(query)
             .OfType<Video>()
             .Where(v => v.IsStream())
             .ToList();
+        existingLookupStopwatch.Stop();
 
         // Match stream rows by persisted Gelato guid, not by volatile playback URL/path.
         var existingByGuid = new Dictionary<Guid, Video>();
@@ -553,6 +557,7 @@ public sealed class GelatoManager(
         }
 
         //upsertedStreams = SaveItems(upsertedStreams, (Folder)primary.GetParent()).Cast<Video>().ToList();
+        var saveStopwatch = Stopwatch.StartNew();
         repo.SaveItems(upsertedStreams, ct);
 
         var newIds = new HashSet<Guid>(upsertedStreams.Select(x => x.Id));
@@ -592,12 +597,22 @@ public sealed class GelatoManager(
         }
 
         repo.SaveItems(toSave, ct);
+        saveStopwatch.Stop();
         upsertedStreams.Add(video);
 
         stopwatch.Stop();
 
         _log.LogInformation(
-            $"SyncStreams finished GelatoId={uri.ExternalId} userId={userId} duration={Math.Round(stopwatch.Elapsed.TotalSeconds, 1)}s streams={upsertedStreams.Count}"
+            "SyncStreams finished GelatoId={GelatoId} userId={UserId} totalMs={TotalMs} fetchMs={FetchMs} existingLookupMs={ExistingLookupMs} saveMs={SaveMs} rawStreams={RawStreams} acceptedStreams={AcceptedStreams} persistedItems={PersistedItems}",
+            uri.ExternalId,
+            userId,
+            stopwatch.ElapsedMilliseconds,
+            fetchStopwatch.ElapsedMilliseconds,
+            existingLookupStopwatch.ElapsedMilliseconds,
+            saveStopwatch.ElapsedMilliseconds,
+            streams.Count,
+            acceptable.Count,
+            upsertedStreams.Count
         );
 
         return acceptable.Count;

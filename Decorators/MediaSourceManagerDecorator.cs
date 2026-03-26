@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using Gelato.Providers;
@@ -70,6 +71,7 @@ public sealed class MediaSourceManagerDecorator(
         User? user = null
     )
     {
+        var stopwatch = Stopwatch.StartNew();
         var manager = _manager.Value;
         _log.LogDebug("GetStaticMediaSources {Id}", item.Id);
         var ctx = _http.HttpContext;
@@ -117,6 +119,7 @@ public sealed class MediaSourceManagerDecorator(
         }
         else if (uri is not null && !manager.HasStreamSync(cacheKey))
         {
+            var syncStopwatch = Stopwatch.StartNew();
             // Bug in web UI that calls the detail page twice. So that's why there's a lock.
             _lock
                 .RunSingleFlightAsync(
@@ -174,6 +177,14 @@ public sealed class MediaSourceManagerDecorator(
                 )
                 .GetAwaiter()
                 .GetResult();
+            syncStopwatch.Stop();
+            _log.LogInformation(
+                "GetStaticMediaSources synced streams for item={ItemId} action={Action} userId={UserId} in {ElapsedMs}ms",
+                item.Id,
+                actionName,
+                userId,
+                syncStopwatch.ElapsedMilliseconds
+            );
 
             // refresh item
             libraryManager.GetItemById(item.Id);
@@ -274,6 +285,15 @@ public sealed class MediaSourceManagerDecorator(
             sources[0].Type = MediaSourceType.Default;
 
         sources[0].Id = item.Id.ToString("N");
+        stopwatch.Stop();
+        _log.LogInformation(
+            "GetStaticMediaSources completed item={ItemId} action={Action} userId={UserId} totalMs={ElapsedMs} sources={SourceCount}",
+            item.Id,
+            actionName,
+            userId,
+            stopwatch.ElapsedMilliseconds,
+            sources.Count
+        );
 
         return sources;
     }
@@ -307,6 +327,7 @@ public sealed class MediaSourceManagerDecorator(
         CancellationToken ct
     )
     {
+        var playbackStopwatch = Stopwatch.StartNew();
         if (item.GetBaseItemKind() is not (BaseItemKind.Movie or BaseItemKind.Episode))
         {
             return await _inner
@@ -353,6 +374,7 @@ public sealed class MediaSourceManagerDecorator(
 
         if (NeedsProbe(selected))
         {
+            var probeStopwatch = Stopwatch.StartNew();
             var libraryOptions = _libraryManager.GetLibraryOptions(owner);
 
             var segmentTask = _mediaSegmentManager.RunSegmentPluginProviders(
@@ -375,6 +397,15 @@ public sealed class MediaSourceManagerDecorator(
 
             if (selected is null)
                 return refreshed;
+
+            probeStopwatch.Stop();
+            _log.LogInformation(
+                "GetPlaybackMediaSources probed item={ItemId} owner={OwnerId} mediaSourceId={MediaSourceId} in {ElapsedMs}ms",
+                item.Id,
+                owner.Id,
+                mediaSourceId,
+                probeStopwatch.ElapsedMilliseconds
+            );
         }
 
         if (item.RunTimeTicks is null && selected.RunTimeTicks is not null)
@@ -383,6 +414,15 @@ public sealed class MediaSourceManagerDecorator(
             await item.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, ct)
                 .ConfigureAwait(false);
         }
+
+        playbackStopwatch.Stop();
+        _log.LogInformation(
+            "GetPlaybackMediaSources completed item={ItemId} mediaSourceId={MediaSourceId} totalMs={ElapsedMs} selectedPath={Path}",
+            item.Id,
+            mediaSourceId,
+            playbackStopwatch.ElapsedMilliseconds,
+            selected.Path
+        );
 
         return [selected];
 
@@ -572,6 +612,7 @@ public sealed class MediaSourceManagerDecorator(
 
     private async Task ProbeStreamAsync(Video owner, string streamUrl, CancellationToken ct)
     {
+        var stopwatch = Stopwatch.StartNew();
         var gelatoFilename = owner.GelatoData<string>("filename");
         var strmBaseName = !string.IsNullOrEmpty(gelatoFilename)
             ? Path.GetFileNameWithoutExtension(gelatoFilename)
@@ -605,6 +646,12 @@ public sealed class MediaSourceManagerDecorator(
         {
             owner.Path = origPath;
             owner.IsShortcut = origShortcut;
+            stopwatch.Stop();
+            _log.LogInformation(
+                "ProbeStreamAsync finished owner={OwnerId} durationMs={ElapsedMs}",
+                owner.Id,
+                stopwatch.ElapsedMilliseconds
+            );
             try
             {
                 File.Delete(tmpStrm);
