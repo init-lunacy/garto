@@ -9,7 +9,7 @@ release:
 	@echo "Updating version in build.yaml..."
 	sed -i 's/^version: .*/version: "$(NEW_VERSION:v%=%)"/' build.yaml
 	git add build.yaml
-	git commit -m "chore(release): bump version to $(NEW_VERSION)"
+	git diff --cached --quiet || git commit -m "chore(release): bump version to $(NEW_VERSION)"
 	@echo "Pushing to git..."
 	git push
 	@echo "Creating GitHub release..."
