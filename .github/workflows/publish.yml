@@ -44,5 +44,5 @@ jobs:
       - name: Jellyfin plugin repo
         uses: Kevinjil/jellyfin-plugin-repo-action@v0.4.3
         with:
-          githubToken: ${{ secrets.GITHUB_TOKEN }}
+          githubToken: ${{ secrets.RELEASE_TOKEN }}
           repository: ${{ github.repository }}
