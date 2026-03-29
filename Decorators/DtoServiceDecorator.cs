@@ -83,7 +83,6 @@ public sealed class DtoServiceDecorator(IDtoService inner, Lazy<GelatoManager> m
         if (IsGelato(dto))
         {
             dto.CanDownload = true;
-            // mark if placeholder
             if (
                 isList
                 || dto.MediaSources?.Length != 1
@@ -92,8 +91,9 @@ public sealed class DtoServiceDecorator(IDtoService inner, Lazy<GelatoManager> m
                     .Path.StartsWith("gelato", StringComparison.OrdinalIgnoreCase)
             )
                 return;
-            dto.LocationType = LocationType.Virtual;
-            dto.Path = null;
+
+            // Keep placeholder details remotely playable-looking so clients still
+            // render the primary play affordance while stream hydration runs.
             dto.CanDownload = false;
         }
     }
