@@ -106,58 +106,10 @@ public class InsertActionFilter(
                 );
             }
 
-            if (
-                lookupHit.MediaType == StremioMediaType.Series
-                && string.Equals(lookupHit.Source, "tmdb", StringComparison.OrdinalIgnoreCase)
-            )
-            {
-                EnqueueSeriesTreeHydration(cfg, meta);
-            }
-
             ctx.ReplaceGuid(baseItem.Id);
         }
 
         await next();
-    }
-
-    private void EnqueueSeriesTreeHydration(Config.PluginConfiguration cfg, StremioMeta meta)
-    {
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                if (!await cfg.Stremio.IsReady().ConfigureAwait(false))
-                {
-                    return;
-                }
-
-                var seriesMeta = await cfg.Stremio.GetMetaAsync(
-                    meta.ImdbId ?? meta.Id,
-                    StremioMediaType.Series
-                ).ConfigureAwait(false);
-
-                if (seriesMeta?.Videos is not { Count: > 0 })
-                {
-                    return;
-                }
-
-                await manager
-                    .SyncSeriesTreesAsync(cfg, seriesMeta, CancellationToken.None)
-                    .ConfigureAwait(false);
-
-                if (GelatoRuntime.EnableWorkerLogging())
-                {
-                    log.LogInformation(
-                        "Queued TMDb-backed series tree hydration completed for {SeriesId}",
-                        meta.ImdbId ?? meta.Id
-                    );
-                }
-            }
-            catch (Exception ex)
-            {
-                log.LogWarning(ex, "Series tree hydration failed for {SeriesId}", meta.ImdbId ?? meta.Id);
-            }
-        });
     }
 
     private async Task<StremioMeta?> ResolveLookupMetaAsync(
@@ -186,7 +138,27 @@ public class InsertActionFilter(
 
             if (detail is not null)
             {
-                return tmdb.ToMeta(detail, lookupHit.MediaType);
+                var tmdbMeta = tmdb.ToMeta(detail, lookupHit.MediaType);
+
+                if (
+                    lookupHit.MediaType == StremioMediaType.Series
+                    && await cfg.Stremio.IsReady().ConfigureAwait(false)
+                )
+                {
+                    var seriesMeta = await cfg.Stremio.GetMetaAsync(
+                        tmdbMeta.ImdbId ?? lookupHit.ImdbId ?? tmdbMeta.Id,
+                        StremioMediaType.Series
+                    ).ConfigureAwait(false);
+
+                    if (seriesMeta?.Videos is { Count: > 0 })
+                    {
+                        tmdbMeta.Videos = seriesMeta.Videos;
+                        tmdbMeta.App_Extras ??= new StremioAppExtras();
+                        tmdbMeta.App_Extras.SeasonPosters ??= seriesMeta.App_Extras?.SeasonPosters;
+                    }
+                }
+
+                return tmdbMeta;
             }
         }
 
