@@ -8,6 +8,14 @@
     "owner": "lstb1t",
     "versions": [
       {
+        "changelog": "## [0.2.4] - 2026-03-29\n\n### 🐛 Bug Fixes\n\n- *(series)* Build episode tree before rendering tmdb series detail\n- *(playback)* Trigger background stream sync on single-item detail requests\n",
+        "checksum": "46b041a0baa5ccc3a991161d8a104296",
+        "sourceUrl": "https://github.com/init-lunacy/garto/releases/download/0.2.4/gelato_0.2.4.0.zip",
+        "targetAbi": "10.11.6.0",
+        "timestamp": "2026-03-29T05:03:15Z",
+        "version": "0.2.4"
+      },
+      {
         "changelog": "## [0.2.3] - 2026-03-29\n\n### 🐛 Bug Fixes\n\n- *(search)* Keep synthetic lookup cache alive for follow-up item requests\n",
         "checksum": "ea2d299e0fa05ca2c3cfc56271f3246a",
         "sourceUrl": "https://github.com/init-lunacy/garto/releases/download/0.2.3/gelato_0.2.3.0.zip",
