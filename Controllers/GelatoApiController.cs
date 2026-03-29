@@ -60,6 +60,14 @@ public sealed class GelatoApiController : ControllerBase
         return Ok(subs ?? new List<StremioSubtitle>());
     }
 
+    [HttpGet("placeholder/{itemId:guid}")]
+    [AllowAnonymous]
+    public IActionResult PlaceholderStream([FromRoute, Required] Guid itemId)
+    {
+        Response.Headers.AcceptRanges = "bytes";
+        return NoContent();
+    }
+
     [HttpGet("stream")]
     public async Task<IActionResult> TorrentStream(
         [FromQuery] string ih,

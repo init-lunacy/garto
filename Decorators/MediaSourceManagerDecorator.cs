@@ -601,6 +601,15 @@ public sealed class MediaSourceManagerDecorator(
             //HasSegments = MediaSegmentManager.HasSegments(item.Id)
         };
 
+        if (
+            !string.IsNullOrEmpty(info.Path)
+            && info.Path.StartsWith("gelato://stub/", StringComparison.OrdinalIgnoreCase)
+        )
+        {
+            info.Path =
+                $"http://127.0.0.1:{GetHttpPort()}/gelato/placeholder/{item.Id:N}";
+        }
+
         // Set custom HTTP header for binge group routing/load balancing in streaming requests for Anfiteatro client to serve binge group aware content.
         if (!string.IsNullOrEmpty(bingeGroup))
         {
