@@ -80,6 +80,7 @@ public sealed class GelatoManager(
     public void SaveLookupHit(Guid guid, RemoteLookupHit hit)
     {
         memoryCache.Set($"lookup:{guid}", hit, TimeSpan.FromMinutes(360));
+        SaveStremioMeta(guid, hit.PreviewMeta);
     }
 
     public RemoteLookupHit? GetLookupHit(Guid guid)

@@ -35,7 +35,7 @@ public sealed class ImageResourceFilter(
             return;
         }
 
-        var stremioMeta = manager.GetStremioMeta(guid);
+        var stremioMeta = manager.GetStremioMeta(guid) ?? manager.GetLookupHit(guid)?.PreviewMeta;
         if (stremioMeta?.Poster is null)
         {
             await next();

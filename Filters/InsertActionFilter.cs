@@ -115,7 +115,6 @@ public class InsertActionFilter(
             }
 
             ctx.ReplaceGuid(baseItem.Id);
-            manager.RemoveLookupHit(guid);
         }
 
         await next();
