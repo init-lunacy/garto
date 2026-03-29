@@ -500,7 +500,7 @@ public static class ActionContextExtensions
         this ActionExecutingContext ctx,
         string key,
         out T value,
-        T defaultValue = default
+        T defaultValue = default!
     )
     {
         if (ctx.ActionArguments.TryGetValue(key, out var objValue) && objValue is T typedValue)
