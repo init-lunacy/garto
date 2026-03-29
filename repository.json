@@ -8,6 +8,14 @@
     "owner": "lstb1t",
     "versions": [
       {
+        "changelog": "## [0.2.2] - 2026-03-29\n\n### 🐛 Bug Fixes\n\n- *(startup)* Replace tmdb typed client with named singleton client\n",
+        "checksum": "142449d3210918983b25d5c93e61d89e",
+        "sourceUrl": "https://github.com/init-lunacy/garto/releases/download/0.2.2/gelato_0.2.2.0.zip",
+        "targetAbi": "10.11.6.0",
+        "timestamp": "2026-03-29T04:21:14Z",
+        "version": "0.2.2"
+      },
+      {
         "changelog": "## [0.2.1] - 2026-03-29\n\n### 🐛 Bug Fixes\n\n- *(startup)* Register tmdb client as a valid typed http client\n",
         "checksum": "c7f69058c3923517d72f89fd4412aab4",
         "sourceUrl": "https://github.com/init-lunacy/garto/releases/download/0.2.1/gelato_0.2.1.0.zip",
