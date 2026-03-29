@@ -109,12 +109,7 @@ public sealed class MediaSourceManagerDecorator(
             return listingSources;
         }
 
-        var allowBackgroundSync =
-            userId != Guid.Empty
-            && (
-                string.Equals(actionName, "GetItem", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(actionName, "GetItemLegacy", StringComparison.OrdinalIgnoreCase)
-            );
+        var allowBackgroundSync = ctx is not null && ctx.IsInsertableAction() && userId != Guid.Empty;
         var cacheKey = BuildStreamSyncCacheKey(item, userId);
 
         if (!allowBackgroundSync)
@@ -543,8 +538,11 @@ public sealed class MediaSourceManagerDecorator(
                 var syncStopwatch = Stopwatch.StartNew();
                 try
                 {
-                    await manager.SyncStreams(item, userId, innerCt).ConfigureAwait(false);
-                    manager.SetStreamSync(cacheKey);
+                    var count = await manager.SyncStreams(item, userId, innerCt).ConfigureAwait(false);
+                    if (count > 0)
+                    {
+                        manager.SetStreamSync(cacheKey);
+                    }
                     _libraryManager.GetItemById(item.Id);
 
                     if (GelatoRuntime.EnableWorkerLogging())
