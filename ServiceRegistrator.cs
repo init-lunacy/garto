@@ -39,7 +39,12 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         services.AddSingleton<CatalogService>();
         services.AddSingleton<CatalogImportService>();
         services.AddSingleton<PalcoCacheService>();
-        services.AddHttpClient<TmdbClient>();
+        services.AddHttpClient(nameof(TmdbClient), client =>
+        {
+            client.BaseAddress = new Uri("https://api.themoviedb.org/3/");
+            client.Timeout = TimeSpan.FromSeconds(10);
+        });
+        services.AddSingleton<TmdbClient>();
         services.AddSingleton<IHostedService, GelatoJavaScriptRegistrationService>();
         services.AddSingleton<SubtitleProvider>();
         services.AddSingleton<ISubtitleProvider>(sp => sp.GetRequiredService<SubtitleProvider>());

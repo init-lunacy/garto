@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Globalization;
-using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -8,7 +7,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Gelato.Services;
 
-public sealed class TmdbClient(HttpClient http, ILogger<TmdbClient> log)
+public sealed class TmdbClient
 {
     private const string BaseUrl = "https://api.themoviedb.org/3/";
     private const string ImageBaseUrl = "https://image.tmdb.org/t/p/original";
@@ -16,6 +15,14 @@ public sealed class TmdbClient(HttpClient http, ILogger<TmdbClient> log)
     {
         PropertyNameCaseInsensitive = true,
     };
+    private readonly IHttpClientFactory _http;
+    private readonly ILogger<TmdbClient> _log;
+
+    public TmdbClient(IHttpClientFactory http, ILogger<TmdbClient> log)
+    {
+        _http = http;
+        _log = log;
+    }
 
     private HttpRequestMessage CreateRequest(string accessToken, string path)
     {
@@ -174,8 +181,7 @@ public sealed class TmdbClient(HttpClient http, ILogger<TmdbClient> log)
 
         try
         {
-            http.BaseAddress ??= new Uri(BaseUrl);
-            http.Timeout = TimeSpan.FromSeconds(10);
+            using var http = _http.CreateClient(nameof(TmdbClient));
             using var request = CreateRequest(accessToken, path);
             using var response = await http.SendAsync(request, ct).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
@@ -186,7 +192,7 @@ public sealed class TmdbClient(HttpClient http, ILogger<TmdbClient> log)
             if (GelatoRuntime.EnableWorkerLogging())
             {
                 stopwatch.Stop();
-                log.LogInformation(
+                _log.LogInformation(
                     "TMDb HTTP {Path} completed in {ElapsedMs}ms",
                     path,
                     stopwatch.ElapsedMilliseconds
@@ -198,7 +204,7 @@ public sealed class TmdbClient(HttpClient http, ILogger<TmdbClient> log)
         catch (Exception ex)
         {
             stopwatch.Stop();
-            log.LogWarning(ex, "TMDb request failed for {Path}", path);
+            _log.LogWarning(ex, "TMDb request failed for {Path}", path);
             return default;
         }
     }
