@@ -75,11 +75,14 @@ public class GelatoStremioProvider(
             await using var s = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false);
             var payload = await JsonSerializer.DeserializeAsync<T>(s, JsonOpts).ConfigureAwait(false);
             stopwatch.Stop();
-            log.LogInformation(
-                "Gelato HTTP {Url} completed in {ElapsedMs}ms",
-                url,
-                stopwatch.ElapsedMilliseconds
-            );
+            if (GelatoRuntime.EnableWorkerLogging())
+            {
+                log.LogInformation(
+                    "Gelato HTTP {Url} completed in {ElapsedMs}ms",
+                    url,
+                    stopwatch.ElapsedMilliseconds
+                );
+            }
             return payload;
         }
         catch (Exception ex)

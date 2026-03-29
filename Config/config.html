@@ -85,6 +85,28 @@
               </label>
             </div>
 
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="txtTmdbAccessToken">TMDb Access API:</label>
+              <input is="emby-input" type="password" id="txtTmdbAccessToken" class="emby-input" />
+              <div class="fieldDescription">Global TMDb v4 bearer token used for fast remote movie and series search.</div>
+            </div>
+
+            <div class="checkboxContainer checkboxContainer-withDescription">
+              <label>
+                <input is="emby-checkbox" type="checkbox" id="chkUseTmdbSearch" />
+                <span>Use TMDb search</span>
+              </label>
+              <div class="fieldDescription">Use TMDb for remote movie and series discovery, then hydrate streams quietly after the detail page loads.</div>
+            </div>
+
+            <div class="checkboxContainer checkboxContainer-withDescription">
+              <label>
+                <input is="emby-checkbox" type="checkbox" id="chkEnableWorkerLogging" />
+                <span>Enable worker/performance logging</span>
+              </label>
+              <div class="fieldDescription">Turns on noisy timing and worker lifecycle logs. Warnings and errors are always logged.</div>
+            </div>
+
             <div class="checkboxContainer checkboxContainer-withDescription" style="margin-bottom: 0.5em;">
               <label>
                 <input is="emby-checkbox" type="checkbox" id="chkFilterUnreleased" />
@@ -270,6 +292,9 @@
         const txtStreamTTL = page.querySelector('#txtStreamTTL');
         const chkEnableMixed = page.querySelector('#chkEnableMixed');
         const chkDisableSearch = page.querySelector('#chkDisableSearch');
+        const txtTmdbAccessToken = page.querySelector('#txtTmdbAccessToken');
+        const chkUseTmdbSearch = page.querySelector('#chkUseTmdbSearch');
+        const chkEnableWorkerLogging = page.querySelector('#chkEnableWorkerLogging');
         const chkFilterUnreleased = page.querySelector('#chkFilterUnreleased');
         const txtBufferDays = page.querySelector('#txtBufferDays');
         const txtFFmpegAnalyzeDuration = page.querySelector('#txtFFmpegAnalyzeDuration');
@@ -548,6 +573,9 @@
             if (txtStreamTTL) txtStreamTTL.value = cfg.StreamTTL || 3600;
             if (chkEnableMixed) chkEnableMixed.checked = cfg.EnableMixed ?? true;
             if (chkDisableSearch) chkDisableSearch.checked = cfg.DisableSearch || false;
+            if (txtTmdbAccessToken) txtTmdbAccessToken.value = cfg.TmdbAccessToken || "";
+            if (chkUseTmdbSearch) chkUseTmdbSearch.checked = cfg.UseTmdbSearch || false;
+            if (chkEnableWorkerLogging) chkEnableWorkerLogging.checked = cfg.EnableWorkerLogging || false;
             if (chkFilterUnreleased) chkFilterUnreleased.checked = cfg.FilterUnreleased || false;
             if (txtBufferDays) txtBufferDays.value = cfg.FilterUnreleasedBufferDays || 30;
             if (txtFFmpegAnalyzeDuration) txtFFmpegAnalyzeDuration.value = cfg.FFmpegAnalyzeDuration || "5M";
@@ -580,6 +608,9 @@
             cfg.EnableMixed = chkEnableMixed.checked;
 
             cfg.DisableSearch = chkDisableSearch.checked;
+            cfg.TmdbAccessToken = txtTmdbAccessToken.value.trim();
+            cfg.UseTmdbSearch = chkUseTmdbSearch.checked;
+            cfg.EnableWorkerLogging = chkEnableWorkerLogging.checked;
             cfg.FilterUnreleased = chkFilterUnreleased.checked;
             cfg.FilterUnreleasedBufferDays = parseInt(txtBufferDays.value) || 30;
 

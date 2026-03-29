@@ -25,6 +25,9 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool CreateCollections { get; set; } = false;
     public int MaxCollectionItems { get; set; } = 100;
     public bool DisableSearch { get; set; } = false;
+    public string TmdbAccessToken { get; set; } = "";
+    public bool UseTmdbSearch { get; set; } = false;
+    public bool EnableWorkerLogging { get; set; } = false;
     public bool EnableJavaScriptInjection { get; set; } = false;
     public List<CatalogConfig> Catalogs { get; set; } = [];
     public List<UserConfig> UserConfigs { get; set; } = [];
@@ -96,6 +99,9 @@ public class UserConfig
             FFmpegProbeSize = baseConfig.FFmpegProbeSize,
             CreateCollections = baseConfig.CreateCollections,
             MaxCollectionItems = baseConfig.MaxCollectionItems,
+            TmdbAccessToken = baseConfig.TmdbAccessToken,
+            UseTmdbSearch = baseConfig.UseTmdbSearch,
+            EnableWorkerLogging = baseConfig.EnableWorkerLogging,
             UserConfigs = baseConfig.UserConfigs,
         };
     }

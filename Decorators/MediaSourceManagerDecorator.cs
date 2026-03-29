@@ -97,97 +97,37 @@ public sealed class MediaSourceManagerDecorator(
         var uri = StremioUri.FromBaseItem(item);
         var actionName =
             ctx?.Items.TryGetValue("actionName", out var ao) == true ? ao as string : null;
-
-        var allowSync = ctx.IsInsertableAction() && userId != Guid.Empty;
-        var video = item as Video;
-        var cacheKey = Guid.TryParse(video?.PrimaryVersionId, out var id)
-            ? id.ToString()
-            : item.Id.ToString();
-
-        if (userId != Guid.Empty)
+        var isListing = ctx is not null && (ctx.IsApiListing() || ctx.IsHomeScreenSectionListing());
+        if (isListing)
         {
-            cacheKey = $"{userId.ToString()}:{cacheKey}";
+            var listingSources = _inner.GetStaticMediaSources(item, enablePathSubstitution, user).ToList();
+            if (listingSources.Count == 0)
+            {
+                listingSources.Add(GetVersionInfo(item, MediaSourceType.Default, ctx!, user));
+            }
+
+            return listingSources;
         }
 
-        if (!allowSync)
+        var allowBackgroundSync =
+            userId != Guid.Empty
+            && (
+                string.Equals(actionName, "GetItem", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(actionName, "GetItemLegacy", StringComparison.OrdinalIgnoreCase)
+            );
+        var cacheKey = BuildStreamSyncCacheKey(item, userId);
+
+        if (!allowBackgroundSync)
         {
             _log.LogDebug(
-                "GetStaticMediaSources not a sync-eligible call. action={Action} uri={Uri}",
+                "GetStaticMediaSources not a background-sync detail call. action={Action} uri={Uri}",
                 actionName,
                 uri?.ToString()
             );
         }
         else if (uri is not null && !manager.HasStreamSync(cacheKey))
         {
-            var syncStopwatch = Stopwatch.StartNew();
-            // Bug in web UI that calls the detail page twice. So that's why there's a lock.
-            _lock
-                .RunSingleFlightAsync(
-                    item.Id,
-                    async ct =>
-                    {
-                        _log.LogDebug("GetStaticMediaSources refreshing streams for {Id}", item.Id);
-
-                        // Prewarm subtitle cache in the background if Gelato Subtitles
-                        // is enabled for this library.
-                        var libraryOptions = _libraryManager.GetLibraryOptions(item);
-                        var subtitlePrewarmEnabled =
-                            libraryOptions.SubtitleDownloadLanguages?.Length > 0
-                            && !libraryOptions.DisabledSubtitleFetchers.Contains(
-                                "Gelato Subtitles",
-                                StringComparer.OrdinalIgnoreCase
-                            );
-
-                        if (subtitlePrewarmEnabled)
-                        {
-                            _ = Task.Run(async () =>
-                            {
-                                try
-                                {
-                                    await _subtitleProvider
-                                        .Value.GetSubtitlesAsync(
-                                            uri.ExternalId,
-                                            uri.MediaType,
-                                            CancellationToken.None
-                                        )
-                                        .ConfigureAwait(false);
-                                }
-                                catch (Exception ex)
-                                {
-                                    _log.LogWarning(ex, "Subtitle prewarm failed for {Uri}", uri);
-                                }
-                            });
-                        }
-
-                        try
-                        {
-                            var count = await manager
-                                .SyncStreams(item, userId, ct)
-                                .ConfigureAwait(false);
-                            if (count > 0)
-                            {
-                                manager.SetStreamSync(cacheKey);
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            _log.LogError(ex, "Failed to sync streams");
-                        }
-                    }
-                )
-                .GetAwaiter()
-                .GetResult();
-            syncStopwatch.Stop();
-            _log.LogInformation(
-                "GetStaticMediaSources synced streams for item={ItemId} action={Action} userId={UserId} in {ElapsedMs}ms",
-                item.Id,
-                actionName,
-                userId,
-                syncStopwatch.ElapsedMilliseconds
-            );
-
-            // refresh item
-            libraryManager.GetItemById(item.Id);
+            EnqueueStreamSync(item, userId, cacheKey);
         }
 
         var sources = _inner.GetStaticMediaSources(item, enablePathSubstitution, user).ToList();
@@ -286,14 +226,17 @@ public sealed class MediaSourceManagerDecorator(
 
         sources[0].Id = item.Id.ToString("N");
         stopwatch.Stop();
-        _log.LogInformation(
-            "GetStaticMediaSources completed item={ItemId} action={Action} userId={UserId} totalMs={ElapsedMs} sources={SourceCount}",
-            item.Id,
-            actionName,
-            userId,
-            stopwatch.ElapsedMilliseconds,
-            sources.Count
-        );
+        if (GelatoRuntime.EnableWorkerLogging())
+        {
+            _log.LogInformation(
+                "GetStaticMediaSources completed item={ItemId} action={Action} userId={UserId} totalMs={ElapsedMs} sources={SourceCount}",
+                item.Id,
+                actionName,
+                userId,
+                stopwatch.ElapsedMilliseconds,
+                sources.Count
+            );
+        }
 
         return sources;
     }
@@ -337,6 +280,22 @@ public sealed class MediaSourceManagerDecorator(
 
         var manager = _manager.Value;
         var ctx = _http.HttpContext;
+        var uri = StremioUri.FromBaseItem(item);
+        var cacheKey = BuildStreamSyncCacheKey(item, user.Id);
+
+        if (uri is not null && !manager.HasStreamSync(cacheKey))
+        {
+            if (GelatoRuntime.EnableWorkerLogging())
+            {
+                _log.LogInformation(
+                    "Playback waiting for stream sync item={ItemId} userId={UserId}",
+                    item.Id,
+                    user.Id
+                );
+            }
+
+            await EnsureStreamsSyncedAsync(item, user.Id, cacheKey, ct).ConfigureAwait(false);
+        }
 
         var sources = GetStaticMediaSources(item, enablePathSubstitution, user);
 
@@ -399,13 +358,16 @@ public sealed class MediaSourceManagerDecorator(
                 return refreshed;
 
             probeStopwatch.Stop();
-            _log.LogInformation(
-                "GetPlaybackMediaSources probed item={ItemId} owner={OwnerId} mediaSourceId={MediaSourceId} in {ElapsedMs}ms",
-                item.Id,
-                owner.Id,
-                mediaSourceId,
-                probeStopwatch.ElapsedMilliseconds
-            );
+            if (GelatoRuntime.EnableWorkerLogging())
+            {
+                _log.LogInformation(
+                    "GetPlaybackMediaSources probed item={ItemId} owner={OwnerId} mediaSourceId={MediaSourceId} in {ElapsedMs}ms",
+                    item.Id,
+                    owner.Id,
+                    mediaSourceId,
+                    probeStopwatch.ElapsedMilliseconds
+                );
+            }
         }
 
         if (item.RunTimeTicks is null && selected.RunTimeTicks is not null)
@@ -416,13 +378,16 @@ public sealed class MediaSourceManagerDecorator(
         }
 
         playbackStopwatch.Stop();
-        _log.LogInformation(
-            "GetPlaybackMediaSources completed item={ItemId} mediaSourceId={MediaSourceId} totalMs={ElapsedMs} selectedPath={Path}",
-            item.Id,
-            mediaSourceId,
-            playbackStopwatch.ElapsedMilliseconds,
-            selected.Path
-        );
+        if (GelatoRuntime.EnableWorkerLogging())
+        {
+            _log.LogInformation(
+                "GetPlaybackMediaSources completed item={ItemId} mediaSourceId={MediaSourceId} totalMs={ElapsedMs} selectedPath={Path}",
+                item.Id,
+                mediaSourceId,
+                playbackStopwatch.ElapsedMilliseconds,
+                selected.Path
+            );
+        }
 
         return [selected];
 
@@ -514,7 +479,7 @@ public sealed class MediaSourceManagerDecorator(
         bool addProbeDelay,
         bool isLiveStream,
         CancellationToken cancellationToken
-    ) =>
+        ) =>
         _inner.AddMediaInfoWithProbe(
             mediaSource,
             isAudio,
@@ -523,6 +488,84 @@ public sealed class MediaSourceManagerDecorator(
             isLiveStream,
             cancellationToken
         );
+
+    private static string BuildStreamSyncCacheKey(BaseItem item, Guid userId)
+    {
+        var video = item as Video;
+        var cacheKey = Guid.TryParse(video?.PrimaryVersionId, out var id)
+            ? id.ToString()
+            : item.Id.ToString();
+
+        if (userId != Guid.Empty)
+        {
+            cacheKey = $"{userId}:{cacheKey}";
+        }
+
+        return cacheKey;
+    }
+
+    private void EnqueueStreamSync(BaseItem item, Guid userId, string cacheKey)
+    {
+        _ = EnsureStreamsSyncedAsync(item, userId, cacheKey, CancellationToken.None);
+
+        if (GelatoRuntime.EnableWorkerLogging())
+        {
+            _log.LogInformation(
+                "Queued background stream sync item={ItemId} userId={UserId}",
+                item.Id,
+                userId
+            );
+        }
+    }
+
+    private async Task EnsureStreamsSyncedAsync(
+        BaseItem item,
+        Guid userId,
+        string cacheKey,
+        CancellationToken ct
+    )
+    {
+        var manager = _manager.Value;
+        if (manager.HasStreamSync(cacheKey))
+        {
+            return;
+        }
+
+        await _lock.RunSingleFlightAsync(
+            item.Id,
+            async innerCt =>
+            {
+                if (manager.HasStreamSync(cacheKey))
+                {
+                    return;
+                }
+
+                var syncStopwatch = Stopwatch.StartNew();
+                try
+                {
+                    await manager.SyncStreams(item, userId, innerCt).ConfigureAwait(false);
+                    manager.SetStreamSync(cacheKey);
+                    _libraryManager.GetItemById(item.Id);
+
+                    if (GelatoRuntime.EnableWorkerLogging())
+                    {
+                        syncStopwatch.Stop();
+                        _log.LogInformation(
+                            "Background stream sync finished item={ItemId} userId={UserId} elapsedMs={ElapsedMs}",
+                            item.Id,
+                            userId,
+                            syncStopwatch.ElapsedMilliseconds
+                        );
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log.LogError(ex, "Failed to sync streams for {ItemId}", item.Id);
+                }
+            },
+            ct
+        ).ConfigureAwait(false);
+    }
 
     private MediaSourceInfo GetVersionInfo(
         BaseItem item,
@@ -628,7 +671,10 @@ public sealed class MediaSourceManagerDecorator(
 
         try
         {
-            _log.LogInformation("Probing stream for {Id} via {Url}", owner.Id, streamUrl);
+            if (GelatoRuntime.EnableWorkerLogging())
+            {
+                _log.LogInformation("Probing stream for {Id} via {Url}", owner.Id, streamUrl);
+            }
             await owner.RefreshMetadata(
                 new MetadataRefreshOptions(directoryService)
                 {
@@ -647,11 +693,14 @@ public sealed class MediaSourceManagerDecorator(
             owner.Path = origPath;
             owner.IsShortcut = origShortcut;
             stopwatch.Stop();
-            _log.LogInformation(
-                "ProbeStreamAsync finished owner={OwnerId} durationMs={ElapsedMs}",
-                owner.Id,
-                stopwatch.ElapsedMilliseconds
-            );
+            if (GelatoRuntime.EnableWorkerLogging())
+            {
+                _log.LogInformation(
+                    "ProbeStreamAsync finished owner={OwnerId} durationMs={ElapsedMs}",
+                    owner.Id,
+                    stopwatch.ElapsedMilliseconds
+                );
+            }
             try
             {
                 File.Delete(tmpStrm);

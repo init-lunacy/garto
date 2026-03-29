@@ -77,6 +77,24 @@ public sealed class GelatoManager(
         memoryCache.Remove($"meta:{guid}");
     }
 
+    public void SaveLookupHit(Guid guid, RemoteLookupHit hit)
+    {
+        memoryCache.Set($"lookup:{guid}", hit, TimeSpan.FromMinutes(360));
+    }
+
+    public RemoteLookupHit? GetLookupHit(Guid guid)
+    {
+        return memoryCache.TryGetValue($"lookup:{guid}", out var value)
+            ? value as RemoteLookupHit
+            : null;
+    }
+
+    public void RemoveLookupHit(Guid guid)
+    {
+        memoryCache.Remove($"lookup:{guid}");
+        RemoveStremioMeta(guid);
+    }
+
     public void ClearCache()
     {
         if (memoryCache is MemoryCache cache)
@@ -288,7 +306,20 @@ public sealed class GelatoManager(
         }
         else
         {
-            baseItem = await SyncSeriesTreesAsync(cfg, meta, ct).ConfigureAwait(false);
+            if (meta.Videos is { Count: > 0 })
+            {
+                baseItem = await SyncSeriesTreesAsync(cfg, meta, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                baseItem = SaveItem(baseItem, parent);
+                if (baseItem is not null)
+                {
+                    await baseItem
+                        .UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+            }
         }
 
         if (baseItem is null)
@@ -299,26 +330,30 @@ public sealed class GelatoManager(
 
         if (refreshItem)
         {
-            var options = new MetadataRefreshOptions(new DirectoryService(fileSystem))
-            {
-                MetadataRefreshMode = MetadataRefreshMode.FullRefresh,
-                ImageRefreshMode = MetadataRefreshMode.FullRefresh,
-                ReplaceAllImages = false,
-                ReplaceAllMetadata = false,
-                ForceSave = true,
-            };
-
-            if (queueRefreshItem)
-            {
-                provider.QueueRefresh(baseItem.Id, options, RefreshPriority.High);
-            }
-            else
-            {
-                _ = provider.RefreshFullItem(baseItem, options, ct);
-            }
+            await RefreshMetadataAsync(baseItem, queueRefreshItem, ct).ConfigureAwait(false);
         }
         _log.LogDebug("inserted new {Kind}: {Name}", baseItem.GetBaseItemKind(), baseItem.Name);
         return (baseItem, true);
+    }
+
+    public async Task RefreshMetadataAsync(BaseItem item, bool queue, CancellationToken ct)
+    {
+        var options = new MetadataRefreshOptions(new DirectoryService(fileSystem))
+        {
+            MetadataRefreshMode = MetadataRefreshMode.FullRefresh,
+            ImageRefreshMode = MetadataRefreshMode.FullRefresh,
+            ReplaceAllImages = false,
+            ReplaceAllMetadata = false,
+            ForceSave = true,
+        };
+
+        if (queue)
+        {
+            provider.QueueRefresh(item.Id, options, RefreshPriority.High);
+            return;
+        }
+
+        await provider.RefreshFullItem(item, options, ct).ConfigureAwait(false);
     }
 
     private IEnumerable<BaseItem> FindByProviderIds(
@@ -415,6 +450,19 @@ public sealed class GelatoManager(
         var acceptable = streams
             .Select(s =>
             {
+                if (IsDiagnosticStream(s))
+                {
+                    if (GelatoRuntime.EnableWorkerLogging())
+                    {
+                        _log.LogInformation(
+                            "Skipping diagnostic AIO stream entry {StreamName}",
+                            s.GetName()
+                        );
+                    }
+
+                    return null;
+                }
+
                 if (!s.IsValid())
                 {
                     _log.LogWarning("Invalid stream, skipping {StreamName}", s.Name);
@@ -582,7 +630,10 @@ public sealed class GelatoManager(
 
         try
         {
-            //repo.DeleteItem([.. toDelete.Select(f => f.Id)]);
+            if (toDelete.Count > 0)
+            {
+                repo.DeleteItem([.. toDelete.Select(f => f.Id)]);
+            }
         }
         catch
         {
@@ -602,20 +653,41 @@ public sealed class GelatoManager(
 
         stopwatch.Stop();
 
-        _log.LogInformation(
-            "SyncStreams finished GelatoId={GelatoId} userId={UserId} totalMs={TotalMs} fetchMs={FetchMs} existingLookupMs={ExistingLookupMs} saveMs={SaveMs} rawStreams={RawStreams} acceptedStreams={AcceptedStreams} persistedItems={PersistedItems}",
-            uri.ExternalId,
-            userId,
-            stopwatch.ElapsedMilliseconds,
-            fetchStopwatch.ElapsedMilliseconds,
-            existingLookupStopwatch.ElapsedMilliseconds,
-            saveStopwatch.ElapsedMilliseconds,
-            streams.Count,
-            acceptable.Count,
-            upsertedStreams.Count
-        );
+        if (GelatoRuntime.EnableWorkerLogging())
+        {
+            _log.LogInformation(
+                "SyncStreams finished GelatoId={GelatoId} userId={UserId} totalMs={TotalMs} fetchMs={FetchMs} existingLookupMs={ExistingLookupMs} saveMs={SaveMs} rawStreams={RawStreams} acceptedStreams={AcceptedStreams} persistedItems={PersistedItems} staleSaved={StaleSaved} staleDeleted={StaleDeleted}",
+                uri.ExternalId,
+                userId,
+                stopwatch.ElapsedMilliseconds,
+                fetchStopwatch.ElapsedMilliseconds,
+                existingLookupStopwatch.ElapsedMilliseconds,
+                saveStopwatch.ElapsedMilliseconds,
+                streams.Count,
+                acceptable.Count,
+                upsertedStreams.Count,
+                toSave.Count,
+                toDelete.Count
+            );
+        }
 
         return acceptable.Count;
+    }
+
+    private static bool IsDiagnosticStream(StremioStream stream)
+    {
+        var name = stream.GetName();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        return name.Contains("Scrape Summary", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("Removal Reasons", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("Included Reasons", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("Pipeline Timing", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("Filter Breakdown", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("Precompute Breakdown", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -1059,12 +1131,31 @@ public sealed class GelatoManager(
         item.DateCreated = DateTime.UtcNow;
 
         var primary = meta.Poster ?? meta.Thumbnail;
+        var backdrop = meta.Background;
+        var imageInfos = new List<ItemImageInfo>();
+
         if (!string.IsNullOrWhiteSpace(primary))
         {
-            item.ImageInfos = new List<ItemImageInfo>
-            {
-                new() { Type = ImageType.Primary, Path = primary },
-            }.ToArray();
+            imageInfos.Add(new ItemImageInfo { Type = ImageType.Primary, Path = primary });
+        }
+
+        if (!string.IsNullOrWhiteSpace(backdrop))
+        {
+            imageInfos.Add(new ItemImageInfo { Type = ImageType.Backdrop, Path = backdrop });
+        }
+
+        if (imageInfos.Count > 0)
+        {
+            item.ImageInfos = imageInfos.ToArray();
+        }
+
+        var genres = meta.Genres ?? meta.Genre;
+        if (genres is { Count: > 0 })
+        {
+            item.Genres = genres
+                .Where(g => !string.IsNullOrWhiteSpace(g))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
         }
 
         item.Id = libraryManager.GetNewItemId(item.Path, item.GetType());

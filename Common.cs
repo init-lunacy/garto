@@ -136,6 +136,50 @@ public static class Utils
     }
 }
 
+public static class GelatoRuntime
+{
+    public static bool EnableWorkerLogging()
+    {
+        return GelatoPlugin.Instance?.Configuration.EnableWorkerLogging ?? false;
+    }
+}
+
+public sealed class RemoteLookupHit
+{
+    public required string Source { get; init; }
+    public required StremioMediaType MediaType { get; init; }
+    public required string LookupId { get; init; }
+    public string? TmdbId { get; init; }
+    public string? ImdbId { get; init; }
+    public required StremioMeta PreviewMeta { get; init; }
+}
+
+public static class RemoteLookupKey
+{
+    public static string Build(string source, StremioMediaType mediaType, string lookupId)
+    {
+        var type = mediaType switch
+        {
+            StremioMediaType.Movie => "movie",
+            StremioMediaType.Series => "series",
+            _ => mediaType.ToString().ToLowerInvariant(),
+        };
+        return $"gelato://lookup/{source}/{type}/{lookupId}";
+    }
+
+    public static Guid ToGuid(string source, StremioMediaType mediaType, string lookupId)
+    {
+        var key = Build(source, mediaType, lookupId);
+        var hash = MD5.HashData(Encoding.UTF8.GetBytes(key));
+        return new Guid(hash);
+    }
+
+    public static Guid ToGuid(RemoteLookupHit hit)
+    {
+        return ToGuid(hit.Source, hit.MediaType, hit.LookupId);
+    }
+}
+
 public sealed class KeyLock
 {
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _queues = new();

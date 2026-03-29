@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Gelato.Config;
+using Gelato.Services;
 using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Model.Dto;
@@ -13,6 +14,7 @@ namespace Gelato.Filters;
 public class SearchActionFilter(
     IDtoService dtoService,
     GelatoManager manager,
+    TmdbClient tmdb,
     ILogger<SearchActionFilter> log
 ) : IAsyncActionFilter, IOrderedFilter
 {
@@ -30,7 +32,6 @@ public class SearchActionFilter(
             cfg.DisableSearch
             || !ctx.IsApiSearchAction()
             || !ctx.TryGetActionArgument<string>("searchTerm", out var searchTerm)
-            || !await cfg.Stremio.IsReady()
         )
         {
             await next();
@@ -53,34 +54,48 @@ public class SearchActionFilter(
             return;
         }
 
+        var canUseTmdb = tmdb.IsEnabled(cfg);
+        var canUseStremio = await cfg.Stremio.IsReady();
+        if (!canUseTmdb && !canUseStremio)
+        {
+            await next();
+            return;
+        }
+
         ctx.TryGetActionArgument("startIndex", out var start, 0);
         ctx.TryGetActionArgument("limit", out var limit, 25);
 
-        var metas = await SearchMetasAsync(searchTerm, requestedTypes, cfg, userId);
+        var hits = await SearchLookupHitsAsync(searchTerm, requestedTypes, cfg, userId);
 
-        log.LogInformation(
-            "Intercepted /Items search \"{Query}\" types=[{Types}] start={Start} limit={Limit} results={Results}",
-            searchTerm,
-            string.Join(",", requestedTypes),
-            start,
-            limit,
-            metas.Count
-        );
+        if (GelatoRuntime.EnableWorkerLogging())
+        {
+            log.LogInformation(
+                "Intercepted /Items search \"{Query}\" types=[{Types}] start={Start} limit={Limit} results={Results}",
+                searchTerm,
+                string.Join(",", requestedTypes),
+                start,
+                limit,
+                hits.Count
+            );
+        }
 
         var dtoStopwatch = Stopwatch.StartNew();
-        var dtos = ConvertMetasToDtos(metas);
+        var dtos = ConvertHitsToDtos(hits);
         dtoStopwatch.Stop();
         var paged = dtos.Skip(start).Take(limit).ToArray();
         requestStopwatch.Stop();
 
-        log.LogInformation(
-            "Gelato search completed query=\"{Query}\" totalMs={TotalMs} dtoMs={DtoMs} upstreamResults={Results} returned={Returned}",
-            searchTerm,
-            requestStopwatch.ElapsedMilliseconds,
-            dtoStopwatch.ElapsedMilliseconds,
-            metas.Count,
-            paged.Length
-        );
+        if (GelatoRuntime.EnableWorkerLogging())
+        {
+            log.LogInformation(
+                "Gelato search completed query=\"{Query}\" totalMs={TotalMs} dtoMs={DtoMs} upstreamResults={Results} returned={Returned}",
+                searchTerm,
+                requestStopwatch.ElapsedMilliseconds,
+                dtoStopwatch.ElapsedMilliseconds,
+                hits.Count,
+                paged.Length
+            );
+        }
 
         ctx.Result = new OkObjectResult(
             new QueryResult<BaseItemDto> { Items = paged, TotalRecordCount = dtos.Count }
@@ -123,23 +138,139 @@ public class SearchActionFilter(
         return requested;
     }
 
-    private async Task<List<StremioMeta>> SearchMetasAsync(
+    private async Task<List<RemoteLookupHit>> SearchLookupHitsAsync(
         string searchTerm,
         HashSet<BaseItemKind> requestedTypes,
         PluginConfiguration cfg,
         Guid userId
     )
     {
-        var tasks = new List<Task<IReadOnlyList<StremioMeta>>>();
-        var taskKinds = new List<string>();
         var movieFolder = cfg.MovieFolder ?? manager.TryGetMovieFolder(userId);
         var seriesFolder = cfg.SeriesFolder ?? manager.TryGetSeriesFolder(userId);
 
-        // Keep hot config in sync for subsequent searches in this request window.
         cfg.MovieFolder = movieFolder;
         cfg.SeriesFolder = seriesFolder;
 
-        if (requestedTypes.Contains(BaseItemKind.Movie) && movieFolder is not null)
+        List<RemoteLookupHit> results = [];
+
+        if (tmdb.IsEnabled(cfg))
+        {
+            try
+            {
+                results = await SearchTmdbAsync(
+                    searchTerm,
+                    requestedTypes,
+                    cfg,
+                    movieFolder is not null,
+                    seriesFolder is not null
+                ).ConfigureAwait(false);
+
+                if (results.Count > 0)
+                {
+                    return ApplyReleaseFilter(results, cfg);
+                }
+
+                if (GelatoRuntime.EnableWorkerLogging())
+                {
+                    log.LogInformation(
+                        "TMDb search returned no results for query=\"{Query}\". Falling back to AIO search.",
+                        searchTerm
+                    );
+                }
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning(ex, "TMDb search failed for query=\"{Query}\". Falling back to AIO.", searchTerm);
+            }
+        }
+
+        if (!await cfg.Stremio.IsReady())
+        {
+            return [];
+        }
+
+        results = await SearchStremioAsync(
+            searchTerm,
+            requestedTypes,
+            cfg,
+            movieFolder is not null,
+            seriesFolder is not null
+        ).ConfigureAwait(false);
+
+        return ApplyReleaseFilter(results, cfg);
+    }
+
+    private async Task<List<RemoteLookupHit>> SearchTmdbAsync(
+        string searchTerm,
+        HashSet<BaseItemKind> requestedTypes,
+        PluginConfiguration cfg,
+        bool hasMovieFolder,
+        bool hasSeriesFolder
+    )
+    {
+        var tasks = new List<Task<IReadOnlyList<TmdbSearchResult>>>();
+        var taskKinds = new List<StremioMediaType>();
+
+        if (requestedTypes.Contains(BaseItemKind.Movie) && hasMovieFolder)
+        {
+            tasks.Add(tmdb.SearchMoviesAsync(cfg.TmdbAccessToken, searchTerm));
+            taskKinds.Add(StremioMediaType.Movie);
+        }
+        else if (requestedTypes.Contains(BaseItemKind.Movie))
+        {
+            log.LogWarning(
+                "No movie folder found, please add your gelato path to a library and rescan. skipping TMDb movie search"
+            );
+        }
+
+        if (requestedTypes.Contains(BaseItemKind.Series) && hasSeriesFolder)
+        {
+            tasks.Add(tmdb.SearchSeriesAsync(cfg.TmdbAccessToken, searchTerm));
+            taskKinds.Add(StremioMediaType.Series);
+        }
+        else if (requestedTypes.Contains(BaseItemKind.Series))
+        {
+            log.LogWarning(
+                "No series folder found, please add your gelato path to a library and rescan. skipping TMDb series search"
+            );
+        }
+
+        var searchStopwatch = Stopwatch.StartNew();
+        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
+        searchStopwatch.Stop();
+
+        var hits = new List<RemoteLookupHit>();
+        for (var i = 0; i < results.Length; i++)
+        {
+            hits.AddRange(results[i].Select(r => tmdb.ToLookupHit(r, taskKinds[i])));
+        }
+
+        if (GelatoRuntime.EnableWorkerLogging())
+        {
+            log.LogInformation(
+                "TMDb upstream search query=\"{Query}\" kinds=[{Kinds}] durationMs={DurationMs} results={Results}",
+                searchTerm,
+                string.Join(",", taskKinds),
+                searchStopwatch.ElapsedMilliseconds,
+                hits.Count
+            );
+        }
+
+        return hits;
+    }
+
+    private async Task<List<RemoteLookupHit>> SearchStremioAsync(
+        string searchTerm,
+        HashSet<BaseItemKind> requestedTypes,
+        PluginConfiguration cfg,
+        bool hasMovieFolder,
+        bool hasSeriesFolder
+    )
+    {
+        var tasks = new List<Task<IReadOnlyList<StremioMeta>>>();
+        var taskKinds = new List<string>();
+
+        if (requestedTypes.Contains(BaseItemKind.Movie) && hasMovieFolder)
         {
             tasks.Add(cfg.Stremio.SearchAsync(searchTerm, StremioMediaType.Movie));
             taskKinds.Add("movie");
@@ -151,7 +282,7 @@ public class SearchActionFilter(
             );
         }
 
-        if (requestedTypes.Contains(BaseItemKind.Series) && seriesFolder is not null)
+        if (requestedTypes.Contains(BaseItemKind.Series) && hasSeriesFolder)
         {
             tasks.Add(cfg.Stremio.SearchAsync(searchTerm, StremioMediaType.Series));
             taskKinds.Add("series");
@@ -164,50 +295,71 @@ public class SearchActionFilter(
         }
 
         var searchStopwatch = Stopwatch.StartNew();
-        var results = (await Task.WhenAll(tasks)).SelectMany(r => r).ToList();
+        var results = (await Task.WhenAll(tasks).ConfigureAwait(false)).SelectMany(r => r).ToList();
         searchStopwatch.Stop();
 
-        log.LogInformation(
-            "Gelato upstream search query=\"{Query}\" kinds=[{Kinds}] durationMs={DurationMs} results={Results}",
-            searchTerm,
-            string.Join(",", taskKinds),
-            searchStopwatch.ElapsedMilliseconds,
-            results.Count
-        );
-
-        var filterUnreleased = cfg.FilterUnreleased;
-        var bufferDays = cfg.FilterUnreleasedBufferDays;
-
-        if (filterUnreleased)
+        if (GelatoRuntime.EnableWorkerLogging())
         {
-            results = results
-                .Where(x => x.IsReleased(StremioMediaType.Movie == x.Type ? bufferDays : 0))
-                .ToList();
+            log.LogInformation(
+                "Gelato upstream AIO search query=\"{Query}\" kinds=[{Kinds}] durationMs={DurationMs} results={Results}",
+                searchTerm,
+                string.Join(",", taskKinds),
+                searchStopwatch.ElapsedMilliseconds,
+                results.Count
+            );
         }
 
-        return results;
+        return results
+            .Select(meta => new RemoteLookupHit
+            {
+                Source = "stremio",
+                MediaType = meta.Type,
+                LookupId = meta.ImdbId ?? meta.Id,
+                TmdbId = meta.Id.StartsWith("tmdb:", StringComparison.OrdinalIgnoreCase)
+                    ? meta.Id["tmdb:".Length..]
+                    : null,
+                ImdbId = meta.ImdbId,
+                PreviewMeta = meta,
+            })
+            .ToList();
     }
 
-    private List<BaseItemDto> ConvertMetasToDtos(List<StremioMeta> metas)
+    private static List<RemoteLookupHit> ApplyReleaseFilter(
+        List<RemoteLookupHit> results,
+        PluginConfiguration cfg
+    )
     {
-        // theres a reason i initally disabled all fields but forgot....
-        // infuse breaks if we do a small subset. Not sure which field it needs. Prolly mediasources
-        var options = new DtoOptions { EnableImages = true, EnableUserData = false };
-
-        var dtos = new List<BaseItemDto>(metas.Count);
-
-        foreach (var meta in metas)
+        if (!cfg.FilterUnreleased)
         {
-            var baseItem = manager.IntoBaseItem(meta);
+            return results;
+        }
+
+        var bufferDays = cfg.FilterUnreleasedBufferDays;
+        return results
+            .Where(x =>
+                x.PreviewMeta.IsReleased(
+                    x.MediaType == StremioMediaType.Movie ? bufferDays : 0
+                )
+            )
+            .ToList();
+    }
+
+    private List<BaseItemDto> ConvertHitsToDtos(List<RemoteLookupHit> hits)
+    {
+        var options = new DtoOptions { EnableImages = true, EnableUserData = false };
+        var dtos = new List<BaseItemDto>(hits.Count);
+
+        foreach (var hit in hits)
+        {
+            var baseItem = manager.IntoBaseItem(hit.PreviewMeta);
             if (baseItem is null)
                 continue;
 
             var dto = dtoService.GetBaseItemDto(baseItem, options);
-            var stremioUri = StremioUri.FromBaseItem(baseItem);
-            dto.Id = stremioUri.ToGuid();
+            dto.Id = RemoteLookupKey.ToGuid(hit);
             dtos.Add(dto);
 
-            manager.SaveStremioMeta(dto.Id, meta);
+            manager.SaveLookupHit(dto.Id, hit);
         }
 
         return dtos;
