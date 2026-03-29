@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -7,7 +8,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Gelato.Services;
 
-public sealed class TmdbClient(IHttpClientFactory http, ILogger<TmdbClient> log)
+public sealed class TmdbClient(HttpClient http, ILogger<TmdbClient> log)
 {
     private const string BaseUrl = "https://api.themoviedb.org/3/";
     private const string ImageBaseUrl = "https://image.tmdb.org/t/p/original";
@@ -16,19 +17,17 @@ public sealed class TmdbClient(IHttpClientFactory http, ILogger<TmdbClient> log)
         PropertyNameCaseInsensitive = true,
     };
 
-    private HttpClient CreateClient(string accessToken)
+    private HttpRequestMessage CreateRequest(string accessToken, string path)
     {
-        var client = http.CreateClient(nameof(TmdbClient));
-        client.BaseAddress = new Uri(BaseUrl);
-        client.Timeout = TimeSpan.FromSeconds(10);
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+        var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.Authorization = new AuthenticationHeaderValue(
             "Bearer",
             accessToken
         );
-        client.DefaultRequestHeaders.Accept.Add(
+        request.Headers.Accept.Add(
             new MediaTypeWithQualityHeaderValue("application/json")
         );
-        return client;
+        return request;
     }
 
     public bool IsEnabled(Config.PluginConfiguration cfg)
@@ -175,8 +174,10 @@ public sealed class TmdbClient(IHttpClientFactory http, ILogger<TmdbClient> log)
 
         try
         {
-            using var client = CreateClient(accessToken);
-            using var response = await client.GetAsync(path, ct).ConfigureAwait(false);
+            http.BaseAddress ??= new Uri(BaseUrl);
+            http.Timeout = TimeSpan.FromSeconds(10);
+            using var request = CreateRequest(accessToken, path);
+            using var response = await http.SendAsync(request, ct).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
             await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
             var payload = await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions, ct)
